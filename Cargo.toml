@@ -1,0 +1,16 @@
+[package]
+name = "namu"
+version = "0.1.0"
+description = "A fast combinator graph reduction engine for triage calculus, a variant of tree calculus, written in Rust."
+authors = ["Royce Moon <moonr@umich.edu>"]
+edition = "2024"
+
+[dependencies]
+ahash = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "reduction"
+harness = false
