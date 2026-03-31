@@ -49,14 +49,14 @@ The Criterion microbenchmarks reuse a single `Trees` instance across iterations,
 | S K K 5 | 85 ns |
 | K 42 99 | 199 ns |
 | triage on Stem | 117 ns |
-| parse\_ternary equal (780 nodes) | 6.6 $\mu$s |
-| parse\_ternary bf (877 nodes) | 7.2 $\mu$s |
+| parse\_ternary equal (780 nodes) | 6.6 µs |
+| parse\_ternary bf (877 nodes) | 7.2 µs |
 | equal(Leaf, Leaf) | 18 ns |
 | equal(K, K) | 32 ns |
 | equal(equal, equal) | 32 ns |
 | bf(I, Leaf) | 23 ns |
 | bf(I, 7) via bf | 33 ns |
-| divergent bailout (budget 1000) | 2.9 $\mu$s |
+| divergent bailout (budget 1000) | 2.9 µs |
 
 ## Acknowledgements
 - Barry Jay created tree calculus
