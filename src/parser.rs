@@ -30,6 +30,21 @@ fn parse_ternary_inner<'a>(trees: &mut Trees, s: &'a [u8]) -> Result<(TreeIndex,
     }
 }
 
+pub fn to_ternary(trees: &Trees, idx: TreeIndex) -> String {
+    let mut res = String::new();
+    to_ternary_inner(trees, idx, &mut res);
+    res
+}
+
+fn to_ternary_inner(trees: &Trees, idx: TreeIndex, out: &mut String) {
+    use crate::tree::Tree;
+    match trees.index(idx) {
+        Tree::Leaf => out.push('0'),
+        Tree::Stem(u) => { out.push('1'); to_ternary_inner(trees, u, out); }
+        Tree::Fork(u, v) => { out.push('2'); to_ternary_inner(trees, u, out); to_ternary_inner(trees, v, out); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

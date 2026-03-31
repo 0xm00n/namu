@@ -15,11 +15,48 @@ cargo build
 cargo test
 ```
 
-Benchmarks use [Criterion.rs](https://github.com/criterion-rs/criterion.rs) and cover combinator operations, ternary parsing, and reduction of large tree programs:
+## Benchmarks
+
+`benches/` contains two benchmark suites. `eager_ternary_ref_bench` runs the same programs and parameters as the [test suite](https://github.com/lambada-llc/tree-calculus/blob/main/implementation/cpp/test.cpp) in Johannes Bader's tree-calculus repository, and a matching C++ file is included so both can be run on the same machine. `reduction` uses [Criterion.rs](https://github.com/criterion-rs/criterion.rs) for microbenchmarks of individual combinator operations, ternary parsing, and reduction of the Rocq-proven `equal` and `bf` programs.
 
 ```
-cargo bench
+cargo bench --bench eager_ternary_ref_bench
+cargo bench --bench reduction
 ```
+
+To build and run the C++ baseline (`EagerTernaryRef`):
+
+```
+git clone https://github.com/lambada-llc/tree-calculus /tmp/tree-calculus
+g++ -O3 -std=c++20 -I /tmp/tree-calculus/implementation/cpp benches/eager_ternary_ref_bench.cpp -o eager_ternary_ref_bench
+./eager_ternary_ref_bench
+```
+
+The [`EagerTernaryRef`](https://github.com/lambada-llc/tree-calculus/blob/main/implementation/cpp/eager-ternary-ref.hpp) evaluator is a simple flat-buffer implementation with no hash consing and no application cache. Namu gets its speed from two things: during reduction, intermediate trees are appended to the arena without hash consing (matching the flat-buffer approach), and an application cache that persists across `apply()` calls memoizes repeated subproblems. The final result of each `apply()` is hash consed so that structural equality via `==` on `TreeIndex` remains O(1). These are representative numbers from one machine (min of 10 iterations, seconds):
+
+| Benchmark | C++ EagerTernaryRef | Namu |
+|---|---|---|
+| Linear fib(90) | 0.0050 | 0.0046 |
+| Recursive fib(24) | 0.437 | 0.019 |
+| Alloc and identity (1M) | 0.099 | 0.038 |
+
+The Criterion microbenchmarks reuse a single `Trees` instance across iterations, so the application cache is warm and the numbers reflect amortized cost:
+
+| Benchmark | Time |
+|---|---|
+| apply(I, 7) | 9 ns |
+| NOT false | 7 ns |
+| S K K 5 | 85 ns |
+| K 42 99 | 199 ns |
+| triage on Stem | 117 ns |
+| parse\_ternary equal (780 nodes) | 6.6 $\mu$s |
+| parse\_ternary bf (877 nodes) | 7.2 $\mu$s |
+| equal(Leaf, Leaf) | 18 ns |
+| equal(K, K) | 32 ns |
+| equal(equal, equal) | 32 ns |
+| bf(I, Leaf) | 23 ns |
+| bf(I, 7) via bf | 33 ns |
+| divergent bailout (budget 1000) | 2.9 $\mu$s |
 
 ## Acknowledgements
 - Barry Jay created tree calculus

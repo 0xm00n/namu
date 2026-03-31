@@ -70,17 +70,20 @@ impl Trees {
             cached_applications: AHashMap::with_capacity(1024),
             eval_stack: Vec::with_capacity(256),
         };
-        t.entries.push(TreeEntry::leaf());
-        let _leaf = t.leaf(); // index 1
-        let _k = t.stem(_leaf); // index 2 = K = Stem(Leaf)
-        let _fork_ll = t.fork(_leaf, _leaf); // index 3 = Fork(Leaf, Leaf)
+        t.entries.push(TreeEntry::leaf()); // index 0: unused (NonZero)
+        let leaf_entry = TreeEntry::leaf();
+        let leaf_idx = TreeIndex::new(1);
+        t.entries.push(leaf_entry);        // index 1: Leaf
+        t.indexed_trees.insert(leaf_entry, leaf_idx);
+        t.stem(leaf_idx);                  // index 2: K = Stem(Leaf)
+        t.fork(leaf_idx, leaf_idx);        // index 3: Fork(Leaf, Leaf)
         t
     }
 
     // Constructors  ------------------------------------------------------------
 
     pub fn leaf(&mut self) -> TreeIndex {
-        self.insert(TreeEntry::leaf())
+        TreeIndex::new(1)
     }
 
     pub fn stem(&mut self, inner: TreeIndex) -> TreeIndex {
@@ -102,6 +105,14 @@ impl Trees {
         idx
     }
 
+    #[inline(always)]
+    fn insert_raw(&mut self, entry: TreeEntry) -> TreeIndex {
+        let raw = self.entries.len() as u32;
+        let idx = TreeIndex::new(raw);
+        self.entries.push(entry);
+        idx
+    }
+
     // Lookup -------------------------------------------------------------------
 
     pub fn index(&self, idx: TreeIndex) -> Tree {
@@ -117,7 +128,6 @@ impl Trees {
     // Reduction ----------------------------------------------------------------
 
     pub fn apply(&mut self, f: TreeIndex, arg: TreeIndex) -> TreeIndex {
-        self.cached_applications.clear();
         self.apply_inner(f, arg)
     }
 
@@ -125,67 +135,66 @@ impl Trees {
         a.raw() <= MAX_TREE_IDX_TO_BE_CACHED && b.raw() <= MAX_TREE_IDX_TO_BE_CACHED
     }
 
+    #[inline(always)]
+    fn check_cache(&mut self, f: TreeIndex, arg: TreeIndex) -> Option<TreeIndex> {
+        if self.should_cache(f, arg) {
+            if let Some(&cached) = self.cached_applications.get(&(f, arg)) {
+                return Some(cached);
+            }
+            self.eval_stack.push(EvalFrame::Cache { a: f, b: arg });
+        }
+        None
+    }
+
     fn apply_inner(&mut self, mut f: TreeIndex, mut arg: TreeIndex) -> TreeIndex {
         debug_assert!(self.eval_stack.is_empty());
 
         loop {
-            if self.should_cache(f, arg) {
-                if let Some(&cached) = self.cached_applications.get(&(f, arg)) {
-                    match self.unwind(cached) {
-                        Some((nf, narg)) => { f = nf; arg = narg; continue; }
-                        None => return cached,
-                    }
-                }
-                self.eval_stack.push(EvalFrame::Cache { a: f, b: arg });
-            }
-
             let result = 'reduce: loop {
                 match self.index(f) {
-                    Tree::Leaf => break 'reduce self.stem(arg),
-                    Tree::Stem(a) => break 'reduce self.fork(a, arg),
+                    Tree::Leaf => break 'reduce self.insert_raw(TreeEntry::stem(arg)),
+                    Tree::Stem(a) => break 'reduce self.insert_raw(TreeEntry::fork(a, arg)),
                     Tree::Fork(left, right) => match self.index(left) {
-                        // K-rule: △△ y z -> y
                         Tree::Leaf => break 'reduce right,
 
                         // S-rule: △(△x)y z -> (xz)(yz)
                         Tree::Stem(x) => {
+                            if let Some(cached) = self.check_cache(f, arg) {
+                                break 'reduce cached;
+                            }
                             self.eval_stack.push(EvalFrame::SRight { y: right, b: arg });
                             f = x;
-                            if self.should_cache(f, arg) {
-                                if let Some(&cached) = self.cached_applications.get(&(f, arg)) {
-                                    break 'reduce cached;
-                                }
-                                self.eval_stack.push(EvalFrame::Cache { a: f, b: arg });
+                            if let Some(cached) = self.check_cache(f, arg) {
+                                break 'reduce cached;
                             }
                             continue 'reduce;
                         }
 
                         // Triage rules: △(△wx)y z
                         Tree::Fork(w, x) => match self.index(arg) {
-                            // Leaf-triage: -> w
                             Tree::Leaf => break 'reduce w,
                             // Stem-triage: △(△wx)y (△u) -> xu
                             Tree::Stem(u) => {
+                                if let Some(cached) = self.check_cache(f, arg) {
+                                    break 'reduce cached;
+                                }
                                 f = x;
                                 arg = u;
-                                if self.should_cache(f, arg) {
-                                    if let Some(&cached) = self.cached_applications.get(&(f, arg)) {
-                                        break 'reduce cached;
-                                    }
-                                    self.eval_stack.push(EvalFrame::Cache { a: f, b: arg });
+                                if let Some(cached) = self.check_cache(f, arg) {
+                                    break 'reduce cached;
                                 }
                                 continue 'reduce;
                             }
                             // Fork-triage: △(△wx)y (△uv) -> yuv
                             Tree::Fork(u, v) => {
+                                if let Some(cached) = self.check_cache(f, arg) {
+                                    break 'reduce cached;
+                                }
                                 self.eval_stack.push(EvalFrame::ForkV { v });
                                 f = right;
                                 arg = u;
-                                if self.should_cache(f, arg) {
-                                    if let Some(&cached) = self.cached_applications.get(&(f, arg)) {
-                                        break 'reduce cached;
-                                    }
-                                    self.eval_stack.push(EvalFrame::Cache { a: f, b: arg });
+                                if let Some(cached) = self.check_cache(f, arg) {
+                                    break 'reduce cached;
                                 }
                                 continue 'reduce;
                             }
@@ -196,13 +205,14 @@ impl Trees {
 
             match self.unwind(result) {
                 Some((nf, narg)) => { f = nf; arg = narg; }
-                None => return result,
+                None => {
+                    let entry = self.entries[result.raw() as usize];
+                    return self.insert(entry);
+                }
             }
         }
     }
 
-    // Pop eval stack, writing cache entries, until we find a frame that
-    // produces a new (f, arg) pair to evaluate. Returns None if stack empty.
     fn unwind(&mut self, result: TreeIndex) -> Option<(TreeIndex, TreeIndex)> {
         loop {
             match self.eval_stack.pop() {
@@ -231,7 +241,6 @@ impl Trees {
         steps: &mut usize,
         max_steps: usize,
     ) -> Result<TreeIndex, TreeIndex> {
-        self.cached_applications.clear();
         self.apply_bounded_inner(f, arg, steps, max_steps)
     }
 
@@ -244,43 +253,35 @@ impl Trees {
     ) -> Result<TreeIndex, TreeIndex> {
         debug_assert!(self.eval_stack.is_empty());
 
-        loop {
-            *steps += 1;
-            if *steps >= max_steps {
-                self.eval_stack.clear();
-                return Err(f);
-            }
-
-            if self.should_cache(f, arg) {
-                if let Some(&cached) = self.cached_applications.get(&(f, arg)) {
-                    match self.unwind(cached) {
-                        Some((nf, narg)) => { f = nf; arg = narg; continue; }
-                        None => return Ok(cached),
-                    }
+        macro_rules! check_budget {
+            () => {
+                *steps += 1;
+                if *steps >= max_steps {
+                    self.eval_stack.clear();
+                    return Err(f);
                 }
-                self.eval_stack.push(EvalFrame::Cache { a: f, b: arg });
-            }
+            };
+        }
+
+        loop {
+            check_budget!();
 
             let result = 'reduce: loop {
                 match self.index(f) {
-                    Tree::Leaf => break 'reduce self.stem(arg),
-                    Tree::Stem(a) => break 'reduce self.fork(a, arg),
+                    Tree::Leaf => break 'reduce self.insert_raw(TreeEntry::stem(arg)),
+                    Tree::Stem(a) => break 'reduce self.insert_raw(TreeEntry::fork(a, arg)),
                     Tree::Fork(left, right) => match self.index(left) {
                         Tree::Leaf => break 'reduce right,
 
                         Tree::Stem(x) => {
+                            if let Some(cached) = self.check_cache(f, arg) {
+                                break 'reduce cached;
+                            }
                             self.eval_stack.push(EvalFrame::SRight { y: right, b: arg });
                             f = x;
-                            *steps += 1;
-                            if *steps >= max_steps {
-                                self.eval_stack.clear();
-                                return Err(f);
-                            }
-                            if self.should_cache(f, arg) {
-                                if let Some(&cached) = self.cached_applications.get(&(f, arg)) {
-                                    break 'reduce cached;
-                                }
-                                self.eval_stack.push(EvalFrame::Cache { a: f, b: arg });
+                            check_budget!();
+                            if let Some(cached) = self.check_cache(f, arg) {
+                                break 'reduce cached;
                             }
                             continue 'reduce;
                         }
@@ -288,35 +289,27 @@ impl Trees {
                         Tree::Fork(w, x) => match self.index(arg) {
                             Tree::Leaf => break 'reduce w,
                             Tree::Stem(u) => {
+                                if let Some(cached) = self.check_cache(f, arg) {
+                                    break 'reduce cached;
+                                }
                                 f = x;
                                 arg = u;
-                                *steps += 1;
-                                if *steps >= max_steps {
-                                    self.eval_stack.clear();
-                                    return Err(f);
-                                }
-                                if self.should_cache(f, arg) {
-                                    if let Some(&cached) = self.cached_applications.get(&(f, arg)) {
-                                        break 'reduce cached;
-                                    }
-                                    self.eval_stack.push(EvalFrame::Cache { a: f, b: arg });
+                                check_budget!();
+                                if let Some(cached) = self.check_cache(f, arg) {
+                                    break 'reduce cached;
                                 }
                                 continue 'reduce;
                             }
                             Tree::Fork(u, v) => {
+                                if let Some(cached) = self.check_cache(f, arg) {
+                                    break 'reduce cached;
+                                }
                                 self.eval_stack.push(EvalFrame::ForkV { v });
                                 f = right;
                                 arg = u;
-                                *steps += 1;
-                                if *steps >= max_steps {
-                                    self.eval_stack.clear();
-                                    return Err(f);
-                                }
-                                if self.should_cache(f, arg) {
-                                    if let Some(&cached) = self.cached_applications.get(&(f, arg)) {
-                                        break 'reduce cached;
-                                    }
-                                    self.eval_stack.push(EvalFrame::Cache { a: f, b: arg });
+                                check_budget!();
+                                if let Some(cached) = self.check_cache(f, arg) {
+                                    break 'reduce cached;
                                 }
                                 continue 'reduce;
                             }
@@ -327,7 +320,10 @@ impl Trees {
 
             match self.unwind(result) {
                 Some((nf, narg)) => { f = nf; arg = narg; }
-                None => return Ok(result),
+                None => {
+                    let entry = self.entries[result.raw() as usize];
+                    return Ok(self.insert(entry));
+                }
             }
         }
     }

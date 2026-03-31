@@ -14,3 +14,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 [[bench]]
 name = "reduction"
 harness = false
+
+[[bench]]
+name = "eager_ternary_ref_bench"
+harness = false
